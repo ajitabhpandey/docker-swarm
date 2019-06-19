@@ -1,0 +1,94 @@
+---
+- name: Install docker on all nodes
+  hosts: docker-all-nodes
+  become: yes
+  tasks:
+    - name: Add Docker-CE Repository on CentOS or RHEL
+      get_url:
+        url: https://download.docker.com/linux/centos/docker-ce.repo
+        dest: /etc/yum.repos.d/docer-ce.repo
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
+      tags: install-docker
+
+    - name: Add GPG key for Debian
+      apt_key:
+        url: https://download.docker.com/linux/debian/gpg
+        state: present
+      when: ansible_distribution == 'Debian'
+      tags: install-docker
+
+    - name: Add Docker-CE Repository on Debian
+      apt_repository:
+        repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_lsb.codename|lower }} stable
+      when: ansible_distribution == 'Debian'
+      tags: install-docker
+
+    - name: Add GPG key for Ubuntu
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+      when: ansible_distribution == 'Ubuntu'
+      tags: install-docker
+
+    - name: Add Docker-CE Repository on Ubuntu
+      apt_repository:
+        repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_lsb.codename|lower }} stable
+      when: ansible_distribution == 'Ubuntu'
+      tags: install-docker
+
+    - name: Install Docker
+      package:
+        name: docker-ce
+        state: latest
+      when: ansible_distribution != 'Boot2Docker'
+      tags: install-docker
+
+    - name: Start Docker
+      service:
+        name: docker
+        state: started
+        enabled: yes
+      when: ansible_distribution != 'Boot2Docker'
+      tags: install-docker
+  
+- name: Configure swarm manager
+  hosts: swarm-managers
+  become: yes
+  tasks:
+    - name: Check if Swarm has already been Initialized
+      shell: docker node ls
+      register: swarm_status
+      ignore_errors: true
+      tags: swarm-setup, add-manager
+
+    - name: Initialize Docker Swarm
+      shell: >
+            docker swarm init
+            --advertise-addr={{ hostvars[inventory_hostname]['ansible_all_ipv4_addresses'] | ipaddr(master_subnet) | first }}:2377
+      when: swarm_status.rc != 0
+      run_once: true
+      tags: swarm-setup
+
+    - name: Get the Manager join-token
+      shell: docker swarm join-token --quiet manager
+      register: manager_token
+      tags: swarm-setup, add-manager
+
+    - name: Get the worker join-token
+      shell: docker swarm join-token --quiet worker
+      register: worker_token
+      tags: swarm-setup, add-worker
+
+    - name: Add Managers to the Swarm
+      shell: "docker swarm join --token {{ hostvars[groups['swarm-managers'][0]]['manager_token']['stdout'] }} {{ hostvars[groups['swarm-managers'][0]]['ansible_all_ipv4_addresses']| ipaddr(master_subnet) | first }}:2377"
+      when: swarm_status.rc != 0
+      ignore_errors: true
+      tags: swarm-setup, add-manager
+
+# Add workers to the swarm
+- hosts: swarm-workers
+  tasks:
+    - name: Add Workers to the Swarm
+      shell: "docker swarm join --token {{ hostvars[groups['swarm-managers'][0]]['worker_token']['stdout'] }} {{ hostvars[groups['swarm-managers'][0]]['ansible_all_ipv4_addresses']| ipaddr(master_subnet) | first }}:2377"
+      ignore_errors: true
+      tags: swarm-setup, add-worker
